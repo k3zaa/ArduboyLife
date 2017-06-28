@@ -22,7 +22,12 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
+
+Modified by Bill Welch so cell size can be changed from one pixel (1x1) to four pixels (2x2). Press the RUN button
+while holding the NEW button to toggle the size.
 */
+
+// Cells are 2x2 or 1x1; just look at top left corner to see if live or dead.
 
 #include <Arduboy2.h>
 #include <ArduboyTones.h>
@@ -62,10 +67,37 @@ ArduboyTones sound(arduboy.audio.enabled);
 
 unsigned int lifeIterate(uint8_t grid[][LIFEWIDTH]);
 
+
+// 1x1 cells .... number of bits in values from 0 to 7 using mask 0x07.
+static const unsigned char bitCount1x1[] = { 0, 1, 1, 2, 1, 2, 2, 3 };
+
+// 2x2 cells .... number of bits in values 0x00 to 0x15 for every other bit using mask 0x15.
+// The top left corner of the 2x2 cell is tested for life. Newly generated live cells have all four pixels on.
+//                                          00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F 10 11 12 13 14 15 
+//                                           0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 
+static const unsigned char bitCount2x2[] = { 0, 1, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 2, 3 };
+
+static unsigned char bitCount[22];
+
+int cellSize;  // 1 : cells are 1x1 pixels; 2 :2x2 pixels. See setupCellSize(newSize);
+
+void setupCellSize(int newSize){
+  cellSize = newSize;
+  if (cellSize==1) {
+    memcpy (bitCount,bitCount1x1,sizeof bitCount1x1);
+  } else {
+    memcpy (bitCount,bitCount2x2,sizeof bitCount2x2);
+  }
+}  
+
 void setup() {
+
+  setupCellSize(1); // Startup using a cell size of 1x1. Pressing RUN while the NEW button is pressed will toggle cell size
+                    // between 1x1 and 2x2.
   arduboy.begin();
   arduboy.audio.off();
   arduboy.clear();
+
   grid = (uint8_t (*)[LIFEWIDTH]) arduboy.getBuffer();
 
   // Display the intro screen
@@ -136,8 +168,12 @@ void loop() {
 // Handler for NEW and REPLAY game buttons
 void newGame(uint8_t button) {
   genGrid(randSeed);
-  waitRelease(button);
-  delayPoll(1000);
+ if ( waitRelease(button) == false){
+ //  Run button pressed with the NEW button - toggle 1x1 or 2x2 cell sizes.
+   setupCellSize( (cellSize==1) ? 2 : 1 );  // alternate cellSize between 1 and 2
+ }
+     waitRelease(BTN_NEW + BTN_RUN);
+//  delayPoll(1000);
 }
 
 // Handler for PAUSE / STEP button.
@@ -210,9 +246,6 @@ void goFaster() {
   }
 }
 
-// Generate a new game grid.
-// Places a random number of random characters
-// at random positions on the screen.
 void genGrid(long seed) {
   int numChars;
 
@@ -282,7 +315,7 @@ void showHelp() {
 // Display the game status.
 // Leave the screen buffer unaltered.
 void showInfo() {
-  uint8_t saveBuf[LIFEWIDTH * 3]; // screen buffer save area
+  uint8_t saveBuf[LIFEWIDTH * 3]; // screen buffer save area only top 3 lines (24 pixels) used
 
   memcpy(saveBuf, grid, sizeof saveBuf);
   memset(grid, 0, sizeof saveBuf);
@@ -314,13 +347,16 @@ void showInfo() {
   memcpy(grid, saveBuf, sizeof saveBuf);
 }
 
-// Return a count of the number of live cells on the current grid
+// Return a count of the number of live cells on the current grid.
+// If cells are 2x2, just look at top left corner to see if live or dead.
 unsigned int countCells() {
   unsigned int total = 0;
   unsigned char *c = (unsigned char *) grid;
 
-  for (unsigned int i = 0; i < (LIFEWIDTH * LIFEHEIGHT / 8); i++, c++) {
-    for (uint8_t j = 0; j < 8; j++) {
+// !!!!!! if 2x2, then need to skip odd columns as well as odd bits in each byte.
+
+  for (unsigned int i = 0; i < (LIFEWIDTH * LIFEHEIGHT / 8); i+=1, c+=1) {
+    for (uint8_t j = 0; j < 8; j+=cellSize) {
       if ((*c & (1 << j)) != 0) {
         total++;
       }
@@ -354,6 +390,9 @@ boolean waitRelease(uint8_t button) {
   while (arduboy.notPressed(button) == false) {
     if (((button == BTN_SLOWER) || (button == BTN_FASTER)) &&
          arduboy.pressed(BTN_SLOWER + BTN_FASTER)) {
+      return false;
+    }
+    if ((button == BTN_NEW) && arduboy.pressed(BTN_NEW + BTN_RUN)) {
       return false;
     }
   }
@@ -390,18 +429,15 @@ void delayPoll(unsigned long msDelay) {
 #define LIFEHIGHROW (LIFELINES - 1)
 #define LIFEHIGHCOL (LIFEWIDTH - 1)
 
-// number of bits in values from 0 to 7
-static const unsigned char bitCount[] = { 0, 1, 1, 2, 1, 2, 2, 3 };
-
 static unsigned int lifeCellCount; // Total number of live cells
 
-unsigned int lifeIterate(uint8_t grid[][LIFEWIDTH]) {
+  unsigned int lifeIterate(uint8_t grid[][LIFEWIDTH]) {
   uint8_t cur[LIFELINES][LIFEWIDTH]; // working copy of the current grid
 
   unsigned char row, col; // current row & column numbers
   unsigned char rowA, rowB, colR; // row above, row below, column to the right
   unsigned int left, centre, right; // packed vertical cell groups
-
+  
   memcpy(cur, grid, sizeof cur);
 
   lifeCellCount = 0;
@@ -409,26 +445,26 @@ unsigned int lifeIterate(uint8_t grid[][LIFEWIDTH]) {
   rowA = LIFEHIGHROW;
   rowB = 1;
   for (row = 0; row < LIFELINES ; row++) {
-    left = (((unsigned int) (cur[rowA][LIFEHIGHCOL])) >> 7) |
-           (((unsigned int) cur[row][LIFEHIGHCOL]) << 1) |
-           (((unsigned int) cur[rowB][LIFEHIGHCOL]) << 9);
+    left = (((unsigned int) (cur[rowA][LIFEHIGHCOL-1])) >> (8-cellSize)) |
+           (((unsigned int) cur[row][LIFEHIGHCOL-1]) << cellSize) |
+           (((unsigned int) cur[rowB][LIFEHIGHCOL-1]) << (8+cellSize));
 
-    centre = (((unsigned int) (cur[rowA][0])) >> 7) |
-             (((unsigned int) cur[row][0]) << 1) |
-             (((unsigned int) cur[rowB][0]) << 9);
+    centre = (((unsigned int) (cur[rowA][0])) >> (8-cellSize)) |
+             (((unsigned int) cur[row][0]) << cellSize) |
+             (((unsigned int) cur[rowB][0]) << (8+cellSize));
 
-    colR = 1;
-    for (col = 0; col < LIFEWIDTH; col++) {
-      right = (((unsigned int) (cur[rowA][colR])) >> 7) |
-              (((unsigned int) cur[row][colR]) << 1) |
-              (((unsigned int) cur[rowB][colR]) << 9);
-
+    colR = cellSize;
+    for (col = 0; col < LIFEWIDTH-1; col+=cellSize) {
+      right = (((unsigned int) (cur[rowA][colR])) >> (8-cellSize)) |
+              (((unsigned int) cur[row][colR]) << cellSize) |
+              (((unsigned int) cur[rowB][colR]) << (8+cellSize));
+   
       grid[row][col] = lifeByte(left, centre, right);
-
+      if (cellSize==2) {grid[row][col+1] = grid[row][col];}
       left = centre;
       centre = right;
 
-      colR = (colR < LIFEHIGHCOL) ? colR + 1 : 0;
+      colR = (colR < LIFEHIGHCOL-1) ? colR + cellSize : 0;
     }
     rowA = (rowA < LIFEHIGHROW) ? rowA + 1 : 0;
     rowB = (rowB < LIFEHIGHROW) ? rowB + 1 : 0;
@@ -436,23 +472,33 @@ unsigned int lifeIterate(uint8_t grid[][LIFEWIDTH]) {
   return lifeCellCount;
 }
 
-// Calculate the next generation for 8 vertical cells (one byte of the
-// array) that have been packet along with their neighbours into ints.
-uint8_t lifeByte(unsigned int left, unsigned int centre, unsigned int right) {
+// Calculate the next generation for 4 or 8 vertical cells (one byte of the
+// array) that have been packed along with their neighbours into ints.
+
+  uint8_t lifeByte(unsigned int left, unsigned int centre, unsigned int right) {
   unsigned char count;
   uint8_t newByte = 0;
-
-  for (unsigned char i = 0; i < 8; i++) {
-    count = bitCount[left & 7] + bitCount[centre & 7] + bitCount[right & 7];
-
-    if ((count == 3) || ((count == 4) && (centre & 2))) {
-      newByte |= (1 << i);
-      lifeCellCount++;
+  uint8_t cellMask;
+  uint8_t mask;
+  uint8_t bits;
+    if (cellSize==1) {
+      mask=0x7;
+      bits=1;
+      cellMask=2;
+    } else {
+      mask=0x15;
+      bits=3;
+      cellMask=4;
     }
-    left >>= 1;
-    centre >>= 1;
-    right >>= 1;
-  }
+    for (unsigned char i = 0; i < 8; i+=cellSize) {
+      count = bitCount[left & mask] + bitCount[centre & mask] + bitCount[right & mask];
+      if ((count == 3) || ((count == 4) && (centre & cellMask))) {
+        newByte |= (bits << i);
+        lifeCellCount++;
+      }
+      left >>= cellSize;
+      centre >>= cellSize;
+      right >>= cellSize;
+    }
   return newByte;
 }
-
